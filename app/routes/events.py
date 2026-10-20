@@ -68,7 +68,7 @@ async def get_event(event_id: UUID, request: Request):
     """One event plus every delivery attempt, oldest first."""
     event = await _get_visible_event(request, event_id)
     attempts = await request.app.state.pool.fetch(
-        """SELECT attempt_no, status_code, latency_ms, error, created_at
+        """SELECT attempt_no, status_code, latency_ms, error, request_headers, created_at
            FROM delivery_attempts WHERE event_id = $1 ORDER BY attempt_no""",
         event_id,
     )

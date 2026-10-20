@@ -32,7 +32,8 @@ class Settings:
         self.backoff_base = _float("BACKOFF_BASE", 1.0)
         self.backoff_cap = _float("BACKOFF_CAP", 30.0)
 
-        # Demo housekeeping
+        # Demo
+        self.demo_failure_rate = _float("DEMO_FAILURE_RATE", 0.2)
         self.demo_retention_minutes = _int("DEMO_RETENTION_MINUTES", 60)
 
 
