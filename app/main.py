@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app import db
 from app.config import settings
+from app.routes import endpoints, events, stats
 
 
 @asynccontextmanager
@@ -23,6 +24,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Relay", lifespan=lifespan)
+app.include_router(endpoints.router)
+app.include_router(events.router)
+app.include_router(stats.router)
 
 
 @app.get("/health")
