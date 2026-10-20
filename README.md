@@ -76,7 +76,7 @@ When a worker writes its result, the `UPDATE` includes `AND locked_until = <the 
 
 ### Concurrency inside a worker
 
-Each worker keeps up to 10 deliveries in flight and claims a replacement as soon as any one finishes. An earlier version claimed 10 and waited for all of them; one receiver hanging for the 5-second timeout stalled the other 9 (**head-of-line blocking**). Fixing that cut p50 delivery time under 30% failures from 66s to 11s in the load test.
+Each worker keeps up to 10 deliveries in flight and claims a replacement as soon as any one finishes. An earlier version claimed 10 and waited for all of them; one receiver hanging for the 5-second timeout stalled the other 9 (**head-of-line blocking**). Fixing that cut p50 delivery time under 30% failures from 92s to 12s (7.8× faster) in the load test.
 
 ### Retries: exponential backoff with jitter
 
@@ -159,6 +159,15 @@ Roughly in the order I'd do them:
 | p95 end-to-end delivery time | 24.81s | 12.63s |
 | Throughput | 26.4 events/sec | 379.9 events/sec |
 | Duplicate deliveries | **0** | **0** |
+
+**Before vs after the head-of-line blocking fix** (same machine, same test: 2,000 events, 30% failures):
+
+| | Batch-and-wait workers | Continuous in-flight workers |
+|---|---|---|
+| p50 end-to-end delivery time | 91.69s | 11.76s (7.8× faster) |
+| p95 end-to-end delivery time | 172.49s | 24.81s (7.0× faster) |
+| Throughput | 9.2 events/sec | 26.4 events/sec |
+| Delivered / duplicates | 99.90% / 0 | 99.90% / 0 |
 
 How to read this:
 - **Dead-lettered 0.10%** matches the theory: an event dies only if 6 attempts in a row fail, 0.3⁶ ≈ 0.07%.
