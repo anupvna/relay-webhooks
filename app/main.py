@@ -12,6 +12,7 @@ from app.routes import demo, endpoints, events, stats
 from app.worker import WorkerConfig, cleanup_loop, worker_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # one log line per webhook is plenty
 
 
 def worker_config() -> WorkerConfig:
