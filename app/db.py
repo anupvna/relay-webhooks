@@ -2,6 +2,7 @@
 import json
 import secrets
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
 
@@ -15,8 +16,18 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     )
 
 
+def clean_dsn(dsn: str) -> str:
+    """Drop URL options asyncpg doesn't understand. Neon's connection strings include
+    channel_binding=require, which asyncpg would send to the server as an (invalid) setting."""
+    parts = urlsplit(dsn)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != "channel_binding"]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 async def create_pool(dsn: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(dsn, min_size=1, max_size=10, init=_init_connection)
+    return await asyncpg.create_pool(
+        clean_dsn(dsn), min_size=1, max_size=10, init=_init_connection
+    )
 
 
 async def run_migrations(pool: asyncpg.Pool) -> list[str]:
