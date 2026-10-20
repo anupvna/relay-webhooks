@@ -1,14 +1,25 @@
-"""FastAPI entry point. Later steps will start the DB pool and workers here."""
+"""FastAPI entry point: opens the DB pool and prepares the schema on startup."""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app import db
+from app.config import settings
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: (step 2) open DB pool, (step 4) start worker tasks + cleanup task.
+    pool = await db.create_pool(settings.database_url)
+    await db.run_migrations(pool)
+    demo = await db.ensure_demo_endpoint(pool, f"{settings.public_base_url}/demo/receiver")
+
+    # Shared state that route handlers (and later the workers) can reach.
+    app.state.pool = pool
+    app.state.demo_endpoint_id = demo["id"]
+
     yield
-    # Shutdown: stop workers, close pool.
+
+    await pool.close()
 
 
 app = FastAPI(title="Relay", lifespan=lifespan)
@@ -16,4 +27,6 @@ app = FastAPI(title="Relay", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    # Also checks the database is reachable, not just that the process is up.
+    await app.state.pool.fetchval("SELECT 1")
     return {"status": "ok"}

@@ -13,7 +13,7 @@ def _int(name: str, default: int) -> int:
 class Settings:
     def __init__(self) -> None:
         self.database_url = os.getenv(
-            "DATABASE_URL", "postgresql://relay:relay@localhost:5432/relay"
+            "DATABASE_URL", "postgresql://relay:relay@localhost:5433/relay"
         )
         # Protects POST /endpoints (registering arbitrary URLs). Empty = disabled.
         self.admin_api_key = os.getenv("ADMIN_API_KEY", "")
