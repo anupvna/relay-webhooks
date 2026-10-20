@@ -54,8 +54,10 @@ RETURNING e.id, e.type, e.payload, e.attempts, e.locked_until, ep.url, ep.secret
 """
 
 
-async def claim_events(pool: asyncpg.Pool, cfg: WorkerConfig) -> list[asyncpg.Record]:
-    return await pool.fetch(CLAIM_SQL, cfg.batch_size, cfg.lease_seconds)
+async def claim_events(
+    pool: asyncpg.Pool, cfg: WorkerConfig, limit: int | None = None
+) -> list[asyncpg.Record]:
+    return await pool.fetch(CLAIM_SQL, limit or cfg.batch_size, cfg.lease_seconds)
 
 
 async def send_webhook(client: httpx.AsyncClient, event, timeout: float) -> dict:
@@ -140,27 +142,59 @@ async def process_event(pool, client, event, cfg: WorkerConfig) -> str:
 
 
 async def run_once(pool, client, cfg: WorkerConfig) -> int:
-    """Claim one batch and deliver it concurrently. Returns how many were claimed."""
+    """Claim one batch and deliver it, waiting for all of it. Used by tests, where
+    step-by-step control matters more than speed."""
     events = await claim_events(pool, cfg)
     if events:
         await asyncio.gather(*(process_event(pool, client, e, cfg) for e in events))
     return len(events)
 
 
+async def _process_safely(name, pool, client, event, cfg) -> None:
+    try:
+        await process_event(pool, client, event, cfg)
+    except Exception:
+        # If recording fails (e.g. a DB blip), the lease simply expires and
+        # another worker retries the event: that's what leases are for.
+        log.exception("%s: failed to process event %s", name, event["id"])
+
+
 async def worker_loop(name: str, pool, client, cfg: WorkerConfig, stop: asyncio.Event):
+    """Keep up to cfg.batch_size deliveries in flight at all times.
+
+    Instead of claiming 10 events and waiting for the slowest one (head-of-line
+    blocking: one 5-second timeout would stall the other 9), we claim a
+    replacement as soon as any delivery finishes.
+    """
     log.info("%s started", name)
+    in_flight: set[asyncio.Task] = set()
     while not stop.is_set():
-        try:
-            claimed = await run_once(pool, client, cfg)
-        except Exception:
-            # A DB hiccup must not kill the worker; log it and try again shortly.
-            log.exception("%s: iteration failed", name)
-            claimed = 0
-        if claimed == 0:
+        free_slots = cfg.batch_size - len(in_flight)
+        claimed = []
+        if free_slots > 0:
             try:
-                await asyncio.wait_for(stop.wait(), timeout=cfg.idle_sleep)
-            except asyncio.TimeoutError:
-                pass
+                claimed = await claim_events(pool, cfg, limit=free_slots)
+            except Exception:
+                # A DB hiccup must not kill the worker; log it and try again shortly.
+                log.exception("%s: claim failed", name)
+            for event in claimed:
+                task = asyncio.create_task(_process_safely(name, pool, client, event, cfg))
+                in_flight.add(task)
+                task.add_done_callback(in_flight.discard)
+
+        if claimed and len(in_flight) < cfg.batch_size:
+            continue  # more work may be waiting: claim again right away
+        # Either every slot is busy or nothing was due. Wait until a delivery
+        # finishes, or a short idle period passes, then look again.
+        waiters = [*in_flight, asyncio.create_task(stop.wait())]
+        await asyncio.wait(
+            waiters, timeout=cfg.idle_sleep, return_when=asyncio.FIRST_COMPLETED
+        )
+        waiters[-1].cancel()
+
+    # Graceful shutdown: finish what we already claimed.
+    if in_flight:
+        await asyncio.gather(*in_flight, return_exceptions=True)
     log.info("%s stopped", name)
 
 

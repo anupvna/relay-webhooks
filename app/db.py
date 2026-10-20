@@ -24,9 +24,9 @@ def clean_dsn(dsn: str) -> str:
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
-async def create_pool(dsn: str) -> asyncpg.Pool:
+async def create_pool(dsn: str, max_size: int = 10) -> asyncpg.Pool:
     return await asyncpg.create_pool(
-        clean_dsn(dsn), min_size=1, max_size=10, init=_init_connection
+        clean_dsn(dsn), min_size=1, max_size=max_size, init=_init_connection
     )
 
 

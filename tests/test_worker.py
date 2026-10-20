@@ -4,7 +4,7 @@ import random
 
 import httpx
 
-from app.worker import claim_events, record_result, run_once, send_webhook
+from app.worker import claim_events, record_result, run_once, send_webhook, worker_loop
 from tests.conftest import FakeReceiver, drain, make_endpoint, make_events
 
 
@@ -174,3 +174,34 @@ async def test_stale_worker_cannot_overwrite_after_losing_lease(pool, cfg):
 
     event = await pool.fetchrow("SELECT status FROM events WHERE id = $1", event_id)
     assert event["status"] == "delivered"
+
+
+async def test_production_worker_loops_deliver_exactly_once(pool, cfg):
+    """Same race as above, but through worker_loop, the continuous loop that runs in
+    production (several deliveries in flight per worker, claiming as slots free up)."""
+    received = []
+
+    async def handler(request):
+        received.append(request.headers["X-Webhook-Id"])
+        await asyncio.sleep(random.uniform(0, 0.02))
+        return httpx.Response(200 if random.random() > 0.3 else 500)  # some retries too
+
+    event_ids = await make_events(pool, await make_endpoint(pool), n=300)
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        workers = [asyncio.create_task(worker_loop(f"w{i}", pool, client, cfg, stop)) for i in range(4)]
+        for _ in range(1000):
+            if await pool.fetchval("SELECT count(*) FROM events WHERE status IN ('pending','delivering')") == 0:
+                break
+            await asyncio.sleep(0.02)
+        stop.set()
+        await asyncio.gather(*workers)
+
+    statuses = await pool.fetch("SELECT status, count(*) FROM events GROUP BY status")
+    assert {r["status"]: r["count"] for r in statuses}.get("pending", 0) == 0
+    # Every attempt the receiver saw was logged exactly once, and nothing was in two places at once.
+    assert len(received) == await pool.fetchval("SELECT count(*) FROM delivery_attempts")
+    successes = await pool.fetchval("SELECT count(*) FROM delivery_attempts WHERE status_code = 200")
+    delivered = await pool.fetchval("SELECT count(*) FROM events WHERE status = 'delivered'")
+    assert successes == delivered  # no event got two successful deliveries
+    assert set(received) == {str(i) for i in event_ids}

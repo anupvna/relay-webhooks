@@ -32,7 +32,7 @@ def worker_config() -> WorkerConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = await db.create_pool(settings.database_url)
+    pool = await db.create_pool(settings.database_url, max_size=settings.db_pool_size)
     await db.run_migrations(pool)
     demo_ep = await db.ensure_demo_endpoint(pool, f"{settings.public_base_url}/demo/receiver")
 

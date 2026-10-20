@@ -20,6 +20,9 @@ class Settings:
         # Public URL of this service, used to build the demo receiver URL.
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 
+        # Database connections shared by the API and all workers.
+        self.db_pool_size = _int("DB_POOL_SIZE", 10)
+
         # Worker
         self.worker_count = _int("WORKER_COUNT", 4)
         self.claim_batch_size = _int("CLAIM_BATCH_SIZE", 10)
