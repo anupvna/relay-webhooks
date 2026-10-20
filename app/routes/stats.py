@@ -17,7 +17,8 @@ async def stats(request: Request):
                avg(attempts) FILTER (WHERE status = 'delivered') AS avg_attempts,
                count(*) FILTER (
                    WHERE delivered_at > now() - make_interval(secs => $1)
-               )                                                AS delivered_recently
+               )                                                AS delivered_recently,
+               now()                                            AS server_time
            FROM events""",
         THROUGHPUT_WINDOW_SECONDS,
     )
@@ -31,4 +32,6 @@ async def stats(request: Request):
         "delivered_pct": round(100 * row["delivered"] / finished, 1) if finished else None,
         "avg_attempts": round(float(row["avg_attempts"]), 2) if row["avg_attempts"] else None,
         "events_per_sec": round(row["delivered_recently"] / THROUGHPUT_WINDOW_SECONDS, 2),
+        # Lets the dashboard show "next retry in Xs" correctly even if the viewer's clock is off.
+        "server_time": row["server_time"],
     }

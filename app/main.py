@@ -4,7 +4,10 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app import db
 from app.config import settings
@@ -68,6 +71,14 @@ app.include_router(endpoints.router)
 app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(demo.router)
+
+
+DASHBOARD = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    return FileResponse(DASHBOARD)
 
 
 @app.get("/health")

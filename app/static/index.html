@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay · reliable webhook delivery</title>
+<meta name="description" content="Live demo of a webhook delivery service: HMAC-signed events, retries with exponential backoff and jitter, and a dead-letter queue.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #eef1f4;
+  --panel: #ffffff;
+  --ink: #14213d;
+  --muted: #5b6b7f;
+  --line: #d5dce4;
+  --ok: #1f8a5b;
+  --fail: #c8302c;
+  --wait: #e09a00;
+  --slot: #dfe5ec;
+  --focus: #2b6cb0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0f1626;
+    --panel: #172033;
+    --ink: #e6ecf5;
+    --muted: #93a1b5;
+    --line: #2a3650;
+    --ok: #3cbf86;
+    --fail: #f0605b;
+    --wait: #f5b82e;
+    --slot: #2a3650;
+    --focus: #7fb0ff;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 15px/1.5 "Archivo", system-ui, sans-serif;
+  font-variation-settings: "wdth" 100;
+}
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 32px 20px 64px; }
+
+/* Header */
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 32px; margin-bottom: 28px; }
+h1 {
+  margin: 0;
+  font-size: clamp(48px, 9vw, 84px);
+  line-height: 0.9;
+  font-weight: 800;
+  font-variation-settings: "wdth" 62;
+  letter-spacing: -0.01em;
+}
+.tagline { margin: 10px 0 0; color: var(--muted); max-width: 52ch; font-size: 16px; }
+.links { display: flex; gap: 20px; font-weight: 600; }
+.links a { text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+.links a:hover { border-color: currentColor; }
+
+/* Layout */
+.grid { display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+aside { position: sticky; top: 20px; display: grid; gap: 16px; }
+@media (max-width: 860px) { aside { position: static; } }
+.box { padding: 18px; }
+h2 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
+
+/* Controls */
+.rate-row { display: flex; justify-content: space-between; align-items: baseline; }
+.rate-value { font-size: 28px; font-weight: 700; font-variation-settings: "wdth" 75; }
+input[type=range] { width: 100%; margin: 8px 0 4px; accent-color: var(--fail); }
+.hint { margin: 0; color: var(--muted); font-size: 13px; }
+.buttons { display: grid; gap: 8px; margin-top: 16px; }
+button {
+  font: inherit; font-weight: 600; cursor: pointer;
+  padding: 10px 14px; border-radius: 8px;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--panel);
+}
+button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+button:disabled { opacity: 0.5; cursor: progress; }
+.notice { min-height: 20px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+
+/* Stats */
+dl.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 12px; margin: 0; }
+dl.stats div { display: flex; flex-direction: column-reverse; }
+dl.stats dt { color: var(--muted); font-size: 13px; }
+dl.stats dd { margin: 0; font-size: 26px; font-weight: 700; font-variation-settings: "wdth" 75; font-variant-numeric: tabular-nums; }
+
+/* Legend */
+.legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 8px; }
+
+/* Board */
+.board-head { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.board-head h2 { margin: 0; }
+.live { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.live.off::before { background: var(--muted); }
+ol.events { list-style: none; margin: 0; padding: 0; }
+.event { border-bottom: 1px solid var(--line); }
+.event:last-child { border-bottom: 0; }
+.row {
+  width: 100%; display: grid; grid-template-columns: 92px 1fr auto; gap: 14px; align-items: center;
+  padding: 11px 18px; background: none; border: 0; border-radius: 0; color: inherit; text-align: left; font-weight: 400;
+}
+@media (max-width: 480px) { .row { grid-template-columns: 70px 1fr auto; gap: 10px; padding: 10px 14px; } .dot { width: 10px; height: 10px; } }
+.row:hover { background: color-mix(in srgb, var(--slot) 45%, transparent); }
+.status { font-weight: 600; font-size: 14px; }
+.status small { display: block; font-weight: 400; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.s-delivered { color: var(--ok); }
+.s-dead { color: var(--fail); }
+.s-retrying, .s-delivering { color: var(--wait); }
+.s-pending { color: var(--muted); }
+
+/* The attempt track: one slot per allowed attempt. */
+.track { display: flex; gap: 5px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--slot); }
+.dot.ok { background: var(--ok); }
+.dot.fail { background: var(--fail); }
+.dot.wait { background: transparent; box-shadow: inset 0 0 0 2px var(--wait); }
+.dot.busy { background: var(--wait); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+
+.detail { padding: 4px 18px 18px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); }
+td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.code-ok { color: var(--ok); font-weight: 600; }
+td.code-fail { color: var(--fail); font-weight: 600; }
+.headers { margin-top: 12px; padding: 12px; background: var(--paper); border-radius: 8px; overflow-x: auto; }
+.headers h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.headers pre { margin: 0; white-space: pre; line-height: 1.6; }
+.empty { padding: 48px 18px; text-align: center; color: var(--muted); }
+.empty strong { display: block; color: var(--ink); font-size: 17px; margin-bottom: 4px; }
+
+footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Relay</h1>
+      <p class="tagline">Delivers webhooks reliably, even when the receiver keeps failing. Every event is signed, retried with backoff, and dead-lettered after 6 failed attempts.</p>
+    </div>
+    <nav class="links">
+      <a href="https://github.com/anupvna/relay-webhooks">Source on GitHub</a>
+      <a href="https://github.com/anupvna/relay-webhooks#readme">How it works</a>
+    </nav>
+  </header>
+
+  <div class="grid">
+    <aside>
+      <section class="panel box" aria-labelledby="controls-title">
+        <h2 id="controls-title">Break the receiver</h2>
+        <div class="rate-row">
+          <label for="rate">Failure rate</label>
+          <span class="rate-value" id="rate-value">20%</span>
+        </div>
+        <input type="range" id="rate" min="0" max="100" step="5" value="20">
+        <p class="hint">The demo receiver fails this share of requests, by returning 500 or hanging past the 5s timeout. Shared by everyone viewing.</p>
+        <div class="buttons">
+          <button id="send">Send 20 events</button>
+          <button id="replay" class="secondary">Replay dead-lettered events</button>
+        </div>
+        <p class="notice" id="notice" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel box" aria-labelledby="stats-title">
+        <h2 id="stats-title">Last hour</h2>
+        <dl class="stats">
+          <div><dt>Delivered</dt><dd id="st-pct">–</dd></div>
+          <div><dt>Avg. attempts</dt><dd id="st-avg">–</dd></div>
+          <div><dt>Dead-lettered</dt><dd id="st-dead">–</dd></div>
+          <div><dt>Delivered per sec</dt><dd id="st-eps">–</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel box" aria-labelledby="legend-title">
+        <h2 id="legend-title">Reading the track</h2>
+        <ul class="legend">
+          <li><span class="dot fail"></span>Attempt failed</li>
+          <li><span class="dot ok"></span>Attempt succeeded</li>
+          <li><span class="dot busy"></span>Sending now</li>
+          <li><span class="dot wait"></span>Retry scheduled</li>
+          <li><span class="dot"></span>Unused attempt</li>
+        </ul>
+      </section>
+    </aside>
+
+    <section class="panel" aria-labelledby="board-title">
+      <div class="board-head">
+        <h2 id="board-title">Events</h2>
+        <span class="live" id="live">Live</span>
+      </div>
+      <ol class="events" id="events"></ol>
+    </section>
+  </div>
+
+  <footer>Free hosting, so the first load can take a few seconds while the server wakes up. Demo events are deleted after an hour.</footer>
+</div>
+
+<script>
+const MAX_ATTEMPTS = 6;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let clockOffset = 0;            // server time minus browser time, in ms
+const expanded = new Set();     // event ids whose detail is open
+const details = new Map();      // event id -> last fetched detail
+let lastEvents = [];
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.detail || `HTTP ${res.status}`), { status: res.status });
+  return body;
+}
+
+function notice(text) { $("notice").textContent = text; }
+
+// ---- Status + attempt track ------------------------------------------------
+function describe(e) {
+  const now = Date.now() + clockOffset;
+  if (e.status === "delivered") return { cls: "delivered", label: "Delivered", sub: e.attempts === 1 ? "first try" : `after ${e.attempts} attempts` };
+  if (e.status === "dead") return { cls: "dead", label: "Dead-lettered", sub: `${e.attempts} attempts failed` };
+  if (e.status === "delivering") return { cls: "delivering", label: "Sending", sub: `attempt ${e.attempts + 1}` };
+  if (e.attempts === 0) return { cls: "pending", label: "Queued", sub: "waiting for a worker" };
+  const secs = Math.max(0, Math.ceil((Date.parse(e.next_attempt_at) - now) / 1000));
+  return { cls: "retrying", label: "Retrying", sub: `attempt ${e.attempts + 1} in ${secs}s` };
+}
+
+function track(e) {
+  const dots = [];
+  for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+    let cls = "";
+    if (i <= e.attempts) cls = e.status === "delivered" && i === e.attempts ? "ok" : "fail";
+    else if (i === e.attempts + 1 && e.status === "delivering") cls = "busy";
+    else if (i === e.attempts + 1 && e.status === "pending" && e.attempts > 0) cls = "wait";
+    dots.push(`<span class="dot ${cls}"></span>`);
+  }
+  return `<span class="track" aria-hidden="true">${dots.join("")}</span>`;
+}
+
+function detailHTML(id) {
+  const d = details.get(id);
+  if (!d) return `<div class="detail"><p class="hint">Loading attempts…</p></div>`;
+  if (!d.delivery_attempts.length) return `<div class="detail"><p class="hint">No attempts yet. A worker will pick this up within a second.</p></div>`;
+  const rows = d.delivery_attempts.map((a) => {
+    const ok = a.status_code >= 200 && a.status_code < 300;
+    return `<tr>
+      <td>${a.attempt_no}</td>
+      <td>${esc(new Date(a.created_at).toLocaleTimeString())}</td>
+      <td class="${ok ? "code-ok" : "code-fail"}">${a.status_code ?? "—"}</td>
+      <td>${a.latency_ms} ms</td>
+      <td>${esc(a.error || "")}</td></tr>`;
+  }).join("");
+  const h = d.delivery_attempts.at(-1).request_headers || {};
+  const headerText = Object.entries(h).map(([k, v]) => `${k}: ${v}`).join("\n");
+  return `<div class="detail">
+    <table><thead><tr><th>#</th><th>Time</th><th>Status</th><th>Latency</th><th>Error</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="headers"><h3>Headers sent on the latest attempt</h3><pre class="mono">${esc(headerText)}</pre></div>
+  </div>`;
+}
+
+function render() {
+  const list = $("events");
+  // Re-rendering replaces the buttons, so remember which row had keyboard focus.
+  const focusedId = document.activeElement?.dataset?.id;
+  renderList(list);
+  if (focusedId) list.querySelector(`[data-id="${focusedId}"]`)?.focus();
+}
+
+function renderList(list) {
+  if (!lastEvents.length) {
+    list.innerHTML = `<li class="empty"><strong>No events yet</strong>Send a batch to watch them get delivered and retried.</li>`;
+    return;
+  }
+  list.innerHTML = lastEvents.map((e) => {
+    const s = describe(e);
+    const open = expanded.has(e.id);
+    return `<li class="event">
+      <button class="row" data-id="${e.id}" aria-expanded="${open}">
+        <span class="mono" title="${e.id}">${e.id.slice(0, 8)}</span>
+        <span class="status s-${s.cls}">${s.label}<small>${s.sub}</small></span>
+        ${track(e)}
+      </button>
+      ${open ? detailHTML(e.id) : ""}
+    </li>`;
+  }).join("");
+}
+
+// ---- Polling ---------------------------------------------------------------
+async function refresh() {
+  try {
+    const [stats, events] = await Promise.all([api("/stats"), api("/events?limit=40")]);
+    clockOffset = Date.parse(stats.server_time) - Date.now();
+    $("st-pct").textContent = stats.delivered_pct == null ? "–" : `${stats.delivered_pct}%`;
+    $("st-avg").textContent = stats.avg_attempts ?? "–";
+    $("st-dead").textContent = stats.dead;
+    $("st-eps").textContent = stats.events_per_sec;
+    lastEvents = events;
+    // Keep open rows' attempt history fresh too.
+    await Promise.all([...expanded].map(async (id) => {
+      if (!events.some((e) => e.id === id)) { expanded.delete(id); return; }
+      details.set(id, await api(`/events/${id}`));
+    }));
+    $("live").classList.remove("off");
+    $("live").textContent = "Live";
+  } catch {
+    $("live").classList.add("off");
+    $("live").textContent = "Reconnecting";
+  }
+  render();
+}
+
+async function loop() {
+  if (!document.hidden) await refresh();   // don't poll from background tabs
+  setTimeout(loop, 1000);
+}
+
+// ---- Controls --------------------------------------------------------------
+let rateTimer;
+$("rate").addEventListener("input", (ev) => {
+  const pct = Number(ev.target.value);
+  $("rate-value").textContent = `${pct}%`;
+  clearTimeout(rateTimer);
+  rateTimer = setTimeout(async () => {
+    try { await api("/demo/failure-rate", { method: "PUT", body: JSON.stringify({ rate: pct / 100 }) }); notice(`Receiver now fails ${pct}% of requests.`); }
+    catch (err) { notice(err.status === 429 ? "Too many changes. Wait a moment and try again." : `Couldn't update the failure rate: ${err.message}`); }
+  }, 250);
+});
+
+$("send").addEventListener("click", async (ev) => {
+  ev.target.disabled = true;
+  try { await api("/demo/send-batch", { method: "POST", body: JSON.stringify({ count: 20 }) }); notice("Sent 20 events."); refresh(); }
+  catch (err) { notice(err.status === 429 ? "Limit is 6 batches a minute. Try again shortly." : `Couldn't send events: ${err.message}`); }
+  finally { ev.target.disabled = false; }
+});
+
+$("replay").addEventListener("click", async (ev) => {
+  ev.target.disabled = true;
+  try {
+    const { replayed } = await api("/dlq/replay", { method: "POST" });
+    notice(replayed ? `Replayed ${replayed} dead-lettered event${replayed === 1 ? "" : "s"}.` : "Nothing to replay. No events are dead-lettered.");
+    refresh();
+  } catch (err) { notice(`Couldn't replay: ${err.message}`); }
+  finally { ev.target.disabled = false; }
+});
+
+$("events").addEventListener("click", async (ev) => {
+  const row = ev.target.closest(".row");
+  if (!row) return;
+  const id = row.dataset.id;
+  if (expanded.has(id)) { expanded.delete(id); render(); return; }
+  expanded.add(id);
+  render();
+  try { details.set(id, await api(`/events/${id}`)); } catch {}
+  render();
+});
+
+api("/demo/failure-rate").then(({ rate }) => {
+  const pct = Math.round(rate * 100);
+  $("rate").value = pct;
+  $("rate-value").textContent = `${pct}%`;
+}).catch(() => {});
+loop();
+</script>
+</body>
+</html>
